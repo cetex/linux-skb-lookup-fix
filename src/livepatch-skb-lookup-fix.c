@@ -47,13 +47,6 @@
  * __inet_lookup_established()
  *   inet_match()
  *
- *
- * __inet_lookup_skb()
- * __udp4_lib_lookup_skb()
- * udp4_lib_lookup_skb()
- * __inet6_lookup_skb()
- * __udp6_lib_lookup_skb()
- *
  * I chose to livepatch these functions since they are very simple and 
  * (I hope) the fix shouldn't break anything for newer or older 
  * kernel-releases even if applied to kernels where the core-issue
@@ -252,6 +245,28 @@ static struct sock *inet_lhash2_lookup__sklookupfix(const struct net *net,
         return result;
 }
 
+struct sock *inet_lookup_run_sk_lookup__sklookupfix(const struct net *net,
+                                       int protocol,
+                                       struct sk_buff *skb, int doff,
+                                       __be32 saddr, __be16 sport,
+                                       __be32 daddr, u16 hnum, const int dif,
+                                       inet_ehashfn_t *ehashfn)
+{
+        struct sock *sk, *reuse_sk;
+        bool no_reuseport;
+
+        no_reuseport = bpf_sk_lookup_run_v4(net, protocol, saddr, sport,
+                                            daddr, hnum, dif, &sk);
+        if (no_reuseport || IS_ERR_OR_NULL(sk))
+                return sk;
+
+        reuse_sk = inet_lookup_reuseport(net, sk, skb, doff, saddr, sport, daddr, hnum,
+                                         ehashfn);
+        if (reuse_sk)
+                sk = reuse_sk;
+        return sk;
+}
+
 struct sock *__inet_lookup_listener__sklookupfix(const struct net *net,
                                     struct inet_hashinfo *hashinfo,
                                     struct sk_buff *skb, int doff,
@@ -266,7 +281,7 @@ struct sock *__inet_lookup_listener__sklookupfix(const struct net *net,
         /* Lookup redirect from BPF */
         if (static_branch_unlikely(&bpf_sk_lookup_enabled) &&
             hashinfo == net->ipv4.tcp_death_row.hashinfo) {
-                result = inet_lookup_run_sk_lookup(net, IPPROTO_TCP, skb, doff,
+                result = inet_lookup_run_sk_lookup__sklookupfix(net, IPPROTO_TCP, skb, doff,
                                                    saddr, sport, daddr, hnum, dif,
                                                    inet_ehashfn);
                 if (result)
